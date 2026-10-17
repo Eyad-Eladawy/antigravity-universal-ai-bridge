@@ -18,7 +18,7 @@ jobs:
           mkdir -p dist/gemini-bridge
           cp -r extension package.json package-lock.json node_modules dist/gemini-bridge/
           cd dist && zip -qr gemini-bridge.zip gemini-bridge
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/gemini-bridge.zip
           generate_release_notes: true
