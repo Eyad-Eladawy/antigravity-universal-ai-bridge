@@ -41,7 +41,21 @@ function autoInjectGlobalRule() {
 
 autoInjectGlobalRule();
 
-const wss = new WebSocketServer({ port: 4545 });
+// Security: accept connections only from this machine and only from the supported AI sites.
+// Browsers always send an Origin header, so other websites (and other devices) are rejected.
+const ALLOWED_ORIGINS = new Set([
+    "https://gemini.google.com",
+    "https://claude.ai",
+    "https://chatgpt.com",
+    "https://chat.openai.com",
+    "https://chat.deepseek.com"
+]);
+
+const wss = new WebSocketServer({
+    host: "127.0.0.1",
+    port: 4545,
+    verifyClient: (info) => ALLOWED_ORIGINS.has(info.origin)
+});
 let browserSocket = null;
 
 let sessionState = {
