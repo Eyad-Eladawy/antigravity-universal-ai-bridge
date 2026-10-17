@@ -1,0 +1,24 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci --omit=dev
+      - name: Build zip (node_modules included, no terminal needed for users)
+        run: |
+          mkdir -p dist/gemini-bridge
+          cp -r extension package.json package-lock.json node_modules dist/gemini-bridge/
+          cd dist && zip -qr gemini-bridge.zip gemini-bridge
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/gemini-bridge.zip
+          generate_release_notes: true

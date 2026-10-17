@@ -1,0 +1,27 @@
+name: Bug report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options: [Gemini, Claude, ChatGPT, DeepSeek, Other]
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Chrome version, Node version, Antigravity version
+    validations: { required: true }
+  - type: dropdown
+    id: button
+    attributes:
+      label: Floating button color when it fails
+      options: [White, Green, Blue, Yellow, No button at all]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Steps to reproduce, what you expected, what you got. Paste errors (e.g. EADDRINUSE) if any.
+    validations: { required: true }

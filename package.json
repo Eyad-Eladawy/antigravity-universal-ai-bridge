@@ -1,0 +1,28 @@
+{
+  "name": "antigravity-universal-ai-bridge",
+  "version": "2.1.0",
+  "description": "Use the Web AI you already pay for (Gemini, Claude, ChatGPT, DeepSeek) directly inside Antigravity IDE.",
+  "private": true,
+  "type": "commonjs",
+  "license": "GPL-3.0-or-later",
+  "author": "Eyad <Trignod.ai>",
+  "homepage": "https://github.com/Eyad-Eladawy/antigravity-universal-ai-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Eyad-Eladawy/antigravity-universal-ai-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Eyad-Eladawy/antigravity-universal-ai-bridge/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["antigravity", "mcp", "chrome-extension", "gemini", "claude", "chatgpt", "deepseek", "ai-bridge"],
+  "scripts": {
+    "check": "node --check extension/bridge.mjs && node --check extension/content.js && node -e \"JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8'));console.log('manifest ok')\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ws": "^8.22.0"
+  }
+}
