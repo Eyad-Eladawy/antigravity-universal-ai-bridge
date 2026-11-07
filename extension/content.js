@@ -1,31 +1,45 @@
 const PROVIDERS = {
     "gemini.google.com": {
         name: "Gemini",
-        input: 'div.ql-editor[contenteditable="true"], div[contenteditable="true"][role="textbox"]',
-        sendBtn: 'button.send-button, button[aria-label*="Send"]',
-        response: 'message-content, .model-response-text',
-        stopBtn: 'button[aria-label*="Stop"]'
+        input: 'div.ql-editor[contenteditable="true"], div[contenteditable="true"][role="textbox"], rich-textarea .input-area, rich-textarea div[contenteditable="true"], div[contenteditable="true"]',
+        sendBtn: 'button.send-button, button[aria-label*="Send" i], button[aria-label*="Envoyer" i], .send-button-container button',
+        response: 'message-content, .model-response-text, model-response .response-content, .response-container-content',
+        stopBtn: 'button[aria-label*="Stop" i], button[aria-label*="Arrêter" i]'
+    },
+    "aistudio.google.com": {
+        name: "Google AI Studio",
+        input: 'textarea.textarea, textarea, div[contenteditable="true"]',
+        sendBtn: 'button.run-button, button[aria-label*="Run"], button[type="submit"]',
+        response: '.chat-turn-content, ms-chat-turn, .model-prompt-container',
+        stopBtn: 'button.stop-button, button[aria-label*="Stop"]'
     },
     "claude.ai": {
         name: "Claude",
         input: 'div.ProseMirror[contenteditable="true"], fieldset div[contenteditable="true"]',
-        sendBtn: 'button[aria-label*="Send"]',
+        sendBtn: 'button[aria-label*="Send" i], button[aria-label*="Envoyer" i], button[data-testid="send-button"]',
         response: '.font-claude-message, .font-claude-response, [data-testid="chat-message-content"]',
-        stopBtn: 'button[aria-label*="Stop"]'
+        stopBtn: 'button[aria-label*="Stop" i], [data-is-streaming="true"]'
     },
     "chatgpt.com": {
         name: "ChatGPT",
         input: '#prompt-textarea, div[contenteditable="true"]#prompt-textarea',
-        sendBtn: 'button[data-testid="send-button"], button[aria-label*="Send"]',
+        sendBtn: 'button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], button[aria-label*="Send" i], button[aria-label*="Envoyer" i]',
         response: 'div[data-message-author-role="assistant"]',
-        stopBtn: 'button[data-testid="stop-button"]'
+        stopBtn: 'button[data-testid="stop-button"], .result-streaming'
+    },
+    "chat.openai.com": {
+        name: "ChatGPT",
+        input: '#prompt-textarea, div[contenteditable="true"]#prompt-textarea',
+        sendBtn: 'button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], button[aria-label*="Send"]',
+        response: 'div[data-message-author-role="assistant"]',
+        stopBtn: 'button[data-testid="stop-button"], .result-streaming'
     },
     "chat.deepseek.com": {
         name: "DeepSeek",
         input: 'textarea#chat-input, textarea',
-        sendBtn: 'div[role="button"][aria-disabled="false"], button[type="submit"]',
+        sendBtn: 'div[role="button"][aria-disabled="false"], button[type="submit"], button.ds-icon-button',
         response: '.ds-markdown',
-        stopBtn: null
+        stopBtn: 'button[aria-label*="Stop"], .ds-icon-button[aria-label*="Stop"], div[role="button"][aria-label*="Stop"]'
     }
 };
 
@@ -41,6 +55,7 @@ const provider = PROVIDERS[currentHost] || {
 let ws = null;
 let isTabDedicated = false;
 let retryTimer = null;
+let isDragging = false;
 
 const statusBtn = document.createElement('div');
 statusBtn.style.cssText = `
@@ -55,9 +70,9 @@ statusBtn.style.cssText = `
   background: #1e1e1e;
   color: #fff;
   font-family: system-ui, -apple-system, sans-serif;
-  cursor: pointer;
+  cursor: grab;
   box-shadow: 0 4px 14px rgba(0,0,0,0.45);
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -65,11 +80,22 @@ statusBtn.style.cssText = `
   user-select: none;
 `;
 
+// Restore saved pill position if exists
+try {
+    const savedPos = JSON.parse(localStorage.getItem('antigravity_pill_pos'));
+    if (savedPos && savedPos.left && savedPos.top) {
+        statusBtn.style.left = savedPos.left;
+        statusBtn.style.top = savedPos.top;
+        statusBtn.style.transform = 'none';
+    }
+} catch (e) {}
+
 const statusLabel = document.createElement('div');
 statusLabel.style.cssText = `
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.2px;
+  pointer-events: none;
 `;
 
 const watermarkLabel = document.createElement('div');
@@ -79,12 +105,53 @@ watermarkLabel.style.cssText = `
   font-weight: 500;
   color: rgba(255, 255, 255, 0.65);
   letter-spacing: 0.4px;
+  pointer-events: none;
 `;
 
 statusBtn.appendChild(statusLabel);
 statusBtn.appendChild(watermarkLabel);
 updateUI('standby');
 document.body.appendChild(statusBtn);
+
+// Draggable status pill
+let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+statusBtn.addEventListener('mousedown', (e) => {
+    isDragging = false;
+    startX = e.clientX;
+    startY = e.clientY;
+    const rect = statusBtn.getBoundingClientRect();
+    origLeft = rect.left;
+    origTop = rect.top;
+    statusBtn.style.cursor = 'grabbing';
+
+    function onMouseMove(moveEvent) {
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+        if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+            isDragging = true;
+            statusBtn.style.transform = 'none';
+            statusBtn.style.left = `${Math.max(10, Math.min(window.innerWidth - rect.width - 10, origLeft + dx))}px`;
+            statusBtn.style.top = `${Math.max(10, Math.min(window.innerHeight - rect.height - 10, origTop + dy))}px`;
+        }
+    }
+
+    function onMouseUp() {
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+        statusBtn.style.cursor = 'grab';
+        if (isDragging) {
+            try {
+                localStorage.setItem('antigravity_pill_pos', JSON.stringify({
+                    left: statusBtn.style.left,
+                    top: statusBtn.style.top
+                }));
+            } catch (e) {}
+        }
+    }
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+});
 
 function updateUI(state) {
     if (state === 'standby') {
@@ -107,10 +174,13 @@ function updateUI(state) {
 }
 
 statusBtn.addEventListener('click', () => {
+    if (isDragging) return;
     isTabDedicated = !isTabDedicated;
     if (isTabDedicated) {
+        try { sessionStorage.setItem('antigravity_bridge_dedicated', 'true'); } catch (e) {}
         connectBridge();
     } else {
+        try { sessionStorage.removeItem('antigravity_bridge_dedicated'); } catch (e) {}
         clearTimeout(retryTimer);
         if (ws) ws.close();
         ws = null;
@@ -118,19 +188,36 @@ statusBtn.addEventListener('click', () => {
     }
 });
 
+// Auto-reconnect if tab was dedicated before refresh / navigation
+try {
+    if (sessionStorage.getItem('antigravity_bridge_dedicated') === 'true') {
+        isTabDedicated = true;
+        connectBridge();
+    }
+} catch (e) {}
+
 function connectBridge() {
     if (!isTabDedicated) return;
     updateUI('connecting');
 
-    ws = new WebSocket('ws://localhost:4545');
+    const port = 4545;
+    ws = new WebSocket(`ws://localhost:${port}`);
 
     ws.onopen = () => updateUI('connected');
 
     ws.onmessage = async(event) => {
-        const data = JSON.parse(event.data);
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch (e) {
+            return;
+        }
+
+        const id = data.id || null;
 
         if (data.type === 'replaced') {
             isTabDedicated = false;
+            try { sessionStorage.removeItem('antigravity_bridge_dedicated'); } catch (e) {}
             clearTimeout(retryTimer);
             updateUI('standby');
             return;
@@ -138,17 +225,40 @@ function connectBridge() {
 
         if (data.type === 'check_session') {
             const existingResponses = document.querySelectorAll(provider.response).length;
-            ws.send(JSON.stringify({
+            const sessionPayload = {
+                provider: provider.name,
                 isEmptyChat: existingResponses === 0,
                 chatKey: window.location.origin + window.location.pathname
+            };
+            ws.send(JSON.stringify({
+                id,
+                type: 'check_session',
+                payload: sessionPayload,
+                ...sessionPayload
             }));
             return;
         }
 
-        updateUI('working');
-        const reply = await askWebProvider(data.prompt);
-        ws.send(JSON.stringify({ reply }));
-        updateUI('connected');
+        if (data.type === 'prompt') {
+            updateUI('working');
+            const promptText = (data.payload && data.payload.prompt) ? data.payload.prompt : (data.prompt || "");
+            try {
+                const reply = await askWebProvider(promptText);
+                ws.send(JSON.stringify({
+                    id,
+                    type: 'prompt',
+                    payload: { reply },
+                    reply
+                }));
+            } catch (err) {
+                ws.send(JSON.stringify({
+                    id,
+                    type: 'prompt',
+                    error: err.message || "Failed to generate reply"
+                }));
+            }
+            updateUI('connected');
+        }
     };
 
     ws.onclose = () => {
@@ -167,17 +277,66 @@ function fillInputBox(editor, text) {
     editor.focus();
 
     if (editor.tagName === 'TEXTAREA' || editor.tagName === 'INPUT') {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(editor, text);
-        editor.dispatchEvent(new Event('input', { bubbles: true }));
-    } else {
-        document.execCommand('selectAll', false, null);
-        const inserted = document.execCommand('insertText', false, text);
-        if (!inserted) {
-            editor.innerText = text;
-            editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set ||
+                       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+        if (setter) {
+            setter.call(editor, text);
+        } else {
+            editor.value = text;
         }
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+        editor.dispatchEvent(new Event('change', { bubbles: true }));
+        return;
     }
+
+    // Modern rich-text editors (Gemini, Claude, ChatGPT)
+    document.execCommand('selectAll', false, null);
+    const inserted = document.execCommand('insertText', false, text);
+    if (!inserted || editor.innerText.trim() === '') {
+        editor.innerText = text;
+        editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    }
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Fallback if editor still empty (framework virtualization)
+    if (!editor.innerText || editor.innerText.trim() === '') {
+        editor.textContent = text;
+        editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    }
+}
+
+function extractCleanResponse(element) {
+    if (!element) return "";
+    const clone = element.cloneNode(true);
+
+    // Remove thinking / reasoning accordions from Gemini, Claude, DeepSeek
+    const thoughtSelectors = [
+        '.thinking-process',
+        '.ds-markdown--thought',
+        'details',
+        '[data-testid="thought-content"]',
+        '.thought-container',
+        '.model-thought',
+        'collapsible-panel'
+    ];
+    for (const sel of thoughtSelectors) {
+        clone.querySelectorAll(sel).forEach(el => el.remove());
+    }
+
+    // Remove UI decorators (copy buttons, code headers)
+    const uiDecorators = [
+        'button',
+        '.code-header',
+        '[data-testid="copy-code-button"]',
+        '[aria-label*="Copy"]',
+        '.copy-button'
+    ];
+    for (const sel of uiDecorators) {
+        clone.querySelectorAll(sel).forEach(el => el.remove());
+    }
+
+    return clone.innerText.trim();
 }
 
 async function askWebProvider(text) {
@@ -187,10 +346,23 @@ async function askWebProvider(text) {
     const initialCount = document.querySelectorAll(provider.response).length;
 
     fillInputBox(editor, text);
-    await new Promise(r => setTimeout(r, 700));
 
-    const sendBtn = document.querySelector(provider.sendBtn);
-    if (sendBtn && !sendBtn.disabled) {
+    // Wait up to 1.5s for modern frameworks (Angular/React) to update button ready state
+    let sendBtn = null;
+    for (let i = 0; i < 6; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        sendBtn = document.querySelector(provider.sendBtn) ||
+                  document.querySelector('button[aria-label*="Send" i]') ||
+                  document.querySelector('button[aria-label*="Envoyer" i]') ||
+                  document.querySelector('button.send-button') ||
+                  document.querySelector('.send-button-container button');
+
+        if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
+            break;
+        }
+    }
+
+    if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
         sendBtn.click();
     } else {
         editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
@@ -199,13 +371,23 @@ async function askWebProvider(text) {
     return new Promise((resolve) => {
         let lastText = "";
         let stableCount = 0;
+        let totalSeconds = 0;
+        const MAX_WAIT_SECONDS = 600; // 10 minutes max for heavy reasoning models
 
         const checkInterval = setInterval(() => {
+            totalSeconds++;
             const responses = document.querySelectorAll(provider.response);
-            if (responses.length <= initialCount) return;
+            if (responses.length <= initialCount) {
+                if (totalSeconds > 35) {
+                    clearInterval(checkInterval);
+                    resolve(`Error: Generation did not start on ${provider.name} after 35 seconds. Check if there is a rate limit or captcha.`);
+                }
+                return;
+            }
 
+            const targetElement = responses[responses.length - 1];
             const isStillStreaming = provider.stopBtn ? document.querySelector(provider.stopBtn) !== null : false;
-            const latestResponse = responses[responses.length - 1].innerText.trim();
+            const latestResponse = extractCleanResponse(targetElement);
 
             if (!isStillStreaming && latestResponse.length > 0 && latestResponse === lastText) {
                 stableCount++;
@@ -216,6 +398,11 @@ async function askWebProvider(text) {
             } else {
                 lastText = latestResponse;
                 stableCount = 0;
+            }
+
+            if (totalSeconds >= MAX_WAIT_SECONDS) {
+                clearInterval(checkInterval);
+                resolve(latestResponse.length > 0 ? latestResponse : `Error: Generation timed out after ${MAX_WAIT_SECONDS} seconds.`);
             }
         }, 1000);
     });
