@@ -11,7 +11,7 @@
 [![Release](https://img.shields.io/github/v/release/Eyad-Eladawy/antigravity-universal-ai-bridge)](https://github.com/Eyad-Eladawy/antigravity-universal-ai-bridge/releases/latest)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-Gemini · Claude · ChatGPT · DeepSeek
+Gemini · Google AI Studio · Claude · ChatGPT · DeepSeek
 
 [Download](https://github.com/Eyad-Eladawy/antigravity-universal-ai-bridge/releases/latest) · [Setup guide (PDF)](docs/Setup-Guide.pdf) · [Report a bug](https://github.com/Eyad-Eladawy/antigravity-universal-ai-bridge/issues/new/choose) · [Contribute](CONTRIBUTING.md)
 
@@ -41,11 +41,12 @@ flowchart LR
 
 | | |
 |---|---|
-| **Universal support** | Gemini, Claude, ChatGPT and DeepSeek. Switch the active "Architect" with one click. |
-| **Delta tracking** | Full context is sent once per chat. Follow-ups only send what changed (saves tokens). |
-| **Context discovery** | Finds files like `STATE.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `REQUIREMENTS.md`, `.cursorrules`. |
-| **Human-in-the-loop** | Runs inside your real browser session over a local WebSocket. No API keys, no scraping accounts. |
-| **Auto rule injection** | Adds the required system rule to `~/.gemini/GEMINI.md` so the IDE model acts as executor, not author. |
+| **Universal support** | Gemini, Google AI Studio, Claude, ChatGPT and DeepSeek. Switch the active "Architect" with one click. |
+| **Draggable & Persistent** | Draggable status badge that remembers its position and dedication state across page refreshes. |
+| **Delta & Token Budgeting** | Full context is budgeted (max 60k chars) with Git awareness. Follow-ups only send what changed. |
+| **Context discovery** | Finds files like `STATE.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `REQUIREMENTS.md`, `.cursorrules` + Git branch/status. |
+| **Deadlock Prevention** | Request correlation IDs, timeouts, and WebSocket heartbeats prevent IDE freezes on disconnects. |
+| **Auto rule injection** | Adds the required rule to `~/.gemini/GEMINI.md` (can be disabled with `BRIDGE_NO_AUTO_RULE=1`). |
 
 ## Requirements
 
@@ -105,7 +106,7 @@ Need a fresh full-context bundle? Just open a **New Chat** in the browser tab.
 
 ## Troubleshooting
 
-- **`EADDRINUSE: address already in use :::4545`**: another bridge instance is running. End the Node.js processes in Task Manager, then click **Refresh** in Manage MCPs.
+- **`EADDRINUSE: address already in use :::4545`**: another bridge instance is running. Either end the lingering Node.js process, or configure a custom port via `BRIDGE_PORT=4546` in your environment or MCP config.
 - **Button stays yellow**: check that the path in `mcp_config.json` points to the exact location of `bridge.mjs`, then click **Refresh**.
 
 Full walkthrough with screenshots: [docs/Setup-Guide.pdf](docs/Setup-Guide.pdf).
