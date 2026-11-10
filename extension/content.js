@@ -2,21 +2,28 @@ const PROVIDERS = {
     "gemini.google.com": {
         name: "Gemini",
         input: 'div.ql-editor[contenteditable="true"], div[contenteditable="true"][role="textbox"]',
-        sendBtn: 'button.send-button, button[aria-label*="Send"]',
+        sendBtn: 'button.send-button, button[aria-label*="Send" i], button[aria-label*="Envoyer" i]',
         response: 'message-content, .model-response-text',
-        stopBtn: 'button[aria-label*="Stop"]'
+        stopBtn: 'button[aria-label*="Stop" i]'
+    },
+    "aistudio.google.com": {
+        name: "Google AI Studio",
+        input: 'textarea.textarea, textarea, div[contenteditable="true"]',
+        sendBtn: 'button.run-button, button[aria-label*="Run" i], button[type="submit"]',
+        response: '.chat-turn-content, ms-chat-turn, .model-prompt-container',
+        stopBtn: 'button.stop-button, button[aria-label*="Stop" i]'
     },
     "claude.ai": {
         name: "Claude",
         input: 'div.ProseMirror[contenteditable="true"], fieldset div[contenteditable="true"]',
-        sendBtn: 'button[aria-label*="Send"]',
+        sendBtn: 'button[aria-label*="Send" i], button[aria-label*="Envoyer" i]',
         response: '.font-claude-message, .font-claude-response, [data-testid="chat-message-content"]',
-        stopBtn: 'button[aria-label*="Stop"]'
+        stopBtn: 'button[aria-label*="Stop" i]'
     },
     "chatgpt.com": {
         name: "ChatGPT",
         input: '#prompt-textarea, div[contenteditable="true"]#prompt-textarea',
-        sendBtn: 'button[data-testid="send-button"], button[aria-label*="Send"]',
+        sendBtn: 'button[data-testid="send-button"], button[aria-label*="Send" i], button[aria-label*="Envoyer" i]',
         response: 'div[data-message-author-role="assistant"]',
         stopBtn: 'button[data-testid="stop-button"]'
     },
@@ -127,7 +134,15 @@ function connectBridge() {
     ws.onopen = () => updateUI('connected');
 
     ws.onmessage = async(event) => {
-        const data = JSON.parse(event.data);
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch (e) {
+            return;
+        }
+
+        // The bridge tags every request with an id; echo it back so the reply is matched to its request.
+        const id = data.id;
 
         if (data.type === 'replaced') {
             isTabDedicated = false;
@@ -139,6 +154,7 @@ function connectBridge() {
         if (data.type === 'check_session') {
             const existingResponses = document.querySelectorAll(provider.response).length;
             ws.send(JSON.stringify({
+                id,
                 isEmptyChat: existingResponses === 0,
                 chatKey: window.location.origin + window.location.pathname
             }));
@@ -146,8 +162,12 @@ function connectBridge() {
         }
 
         updateUI('working');
-        const reply = await askWebProvider(data.prompt);
-        ws.send(JSON.stringify({ reply }));
+        try {
+            const reply = await askWebProvider(data.prompt);
+            ws.send(JSON.stringify({ id, reply }));
+        } catch (err) {
+            ws.send(JSON.stringify({ id, error: (err && err.message) || 'Failed to generate reply' }));
+        }
         updateUI('connected');
     };
 
@@ -180,6 +200,41 @@ function fillInputBox(editor, text) {
     }
 }
 
+// Send-button labels in the UI languages we know about (matched case-insensitively).
+const SEND_LABEL_RE = /send|envoyer|enviar|senden/i;
+
+function isButtonReady(btn) {
+    return !!btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true';
+}
+
+function findSendButton() {
+    const bySelector = document.querySelector(provider.sendBtn);
+    if (bySelector) return bySelector;
+    return Array.from(document.querySelectorAll('button[aria-label]'))
+        .find(b => SEND_LABEL_RE.test(b.getAttribute('aria-label'))) || null;
+}
+
+// Copy of a response element without the model's "thinking" panels and UI buttons,
+// so only the actual answer is sent back to the IDE.
+function extractCleanResponse(element) {
+    if (!element) return "";
+    const clone = element.cloneNode(true);
+    const removeSelectors = [
+        '.thinking-process',
+        '.ds-markdown--thought',
+        '[data-testid="thought-content"]',
+        '.thought-container',
+        '.model-thought',
+        'button',
+        '.code-header',
+        '.copy-button'
+    ];
+    for (const sel of removeSelectors) {
+        clone.querySelectorAll(sel).forEach(el => el.remove());
+    }
+    return clone.innerText.trim();
+}
+
 async function askWebProvider(text) {
     const editor = document.querySelector(provider.input);
     if (!editor) return `Error: Input box not found on ${provider.name}. Please open a fresh chat session.`;
@@ -187,10 +242,16 @@ async function askWebProvider(text) {
     const initialCount = document.querySelectorAll(provider.response).length;
 
     fillInputBox(editor, text);
-    await new Promise(r => setTimeout(r, 700));
 
-    const sendBtn = document.querySelector(provider.sendBtn);
-    if (sendBtn && !sendBtn.disabled) {
+    // Frameworks (Angular/React) enable the send button a moment after the text lands; poll up to ~1.5s.
+    let sendBtn = null;
+    for (let i = 0; i < 6; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        sendBtn = findSendButton();
+        if (isButtonReady(sendBtn)) break;
+    }
+
+    if (isButtonReady(sendBtn)) {
         sendBtn.click();
     } else {
         editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
@@ -199,23 +260,40 @@ async function askWebProvider(text) {
     return new Promise((resolve) => {
         let lastText = "";
         let stableCount = 0;
+        let seconds = 0;
+        const MAX_WAIT_SECONDS = 600;   // heavy reasoning models can be slow
+        const START_WAIT_SECONDS = 35;  // no new response by then = rate limit / captcha / failed send
 
         const checkInterval = setInterval(() => {
+            seconds++;
             const responses = document.querySelectorAll(provider.response);
-            if (responses.length <= initialCount) return;
+
+            if (responses.length <= initialCount) {
+                if (seconds > START_WAIT_SECONDS) {
+                    clearInterval(checkInterval);
+                    resolve(`Error: Generation did not start on ${provider.name} after ${START_WAIT_SECONDS} seconds. Check for a rate limit or captcha.`);
+                }
+                return;
+            }
 
             const isStillStreaming = provider.stopBtn ? document.querySelector(provider.stopBtn) !== null : false;
-            const latestResponse = responses[responses.length - 1].innerText.trim();
+            const latestResponse = extractCleanResponse(responses[responses.length - 1]);
 
             if (!isStillStreaming && latestResponse.length > 0 && latestResponse === lastText) {
                 stableCount++;
                 if (stableCount >= 4) {
                     clearInterval(checkInterval);
                     resolve(latestResponse);
+                    return;
                 }
             } else {
                 lastText = latestResponse;
                 stableCount = 0;
+            }
+
+            if (seconds >= MAX_WAIT_SECONDS) {
+                clearInterval(checkInterval);
+                resolve(latestResponse.length > 0 ? latestResponse : `Error: Generation timed out after ${MAX_WAIT_SECONDS} seconds.`);
             }
         }, 1000);
     });
