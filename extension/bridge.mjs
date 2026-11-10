@@ -45,6 +45,7 @@ autoInjectGlobalRule();
 // Browsers always send an Origin header, so other websites (and other devices) are rejected.
 const ALLOWED_ORIGINS = new Set([
     "https://gemini.google.com",
+    "https://aistudio.google.com",
     "https://claude.ai",
     "https://chatgpt.com",
     "https://chat.openai.com",
@@ -57,6 +58,43 @@ const wss = new WebSocketServer({
     verifyClient: (info) => ALLOWED_ORIGINS.has(info.origin)
 });
 let browserSocket = null;
+let heartbeatInterval = null;
+
+// Detect a dead browser tab: ping every 15s, drop the socket if it never answers.
+function setupHeartbeat(ws) {
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    ws.isAlive = true;
+    ws.on("pong", () => { ws.isAlive = true; });
+
+    heartbeatInterval = setInterval(() => {
+        if (!browserSocket || browserSocket.readyState !== 1) {
+            clearInterval(heartbeatInterval);
+            return;
+        }
+        if (browserSocket.isAlive === false) {
+            browserSocket.terminate();
+            browserSocket = null;
+            clearInterval(heartbeatInterval);
+            return;
+        }
+        browserSocket.isAlive = false;
+        try { browserSocket.ping(); } catch (e) {}
+    }, 15000);
+    // Don't let the timer keep the Node process alive on its own.
+    if (heartbeatInterval.unref) heartbeatInterval.unref();
+}
+
+function cleanupAndExit() {
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    if (browserSocket) {
+        try { browserSocket.close(); } catch (e) {}
+    }
+    try { wss.close(); } catch (e) {}
+    process.exit(0);
+}
+
+process.on("SIGINT", cleanupAndExit);
+process.on("SIGTERM", cleanupAndExit);
 
 let sessionState = {
     initializedProjects: new Set(),
@@ -73,12 +111,72 @@ function getHash(content) {
     return crypto.createHash("md5").update(content).digest("hex");
 }
 
+// Send a request to the dedicated browser tab and wait for the reply that carries the same id.
+// Rejects on timeout or if the tab disconnects, so an MCP call can never hang forever.
+function callBrowserTab(type, payload = {}, timeoutMs = 300000) {
+    return new Promise((resolve, reject) => {
+        const socket = browserSocket;
+        if (!socket || socket.readyState !== 1) {
+            return reject(new Error("No browser tab is currently connected. Please click the floating button on Gemini, Claude, ChatGPT, or DeepSeek to dedicate a tab. (Powered by Trignod.ai)"));
+        }
+
+        const id = crypto.randomUUID();
+        let timer = null;
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            socket.off("message", onMessage);
+            socket.off("close", onClose);
+            socket.off("error", onError);
+        };
+
+        const onMessage = (data) => {
+            let msg;
+            try { msg = JSON.parse(data.toString()); } catch (e) { return; }
+            // Replies must echo our id. A reply with no id at all comes from an older
+            // extension build, so accept it by shape to stay backward compatible.
+            const isOurs = msg.id === id ||
+                (msg.id === undefined && (type === "prompt" ? msg.reply !== undefined : msg.chatKey !== undefined));
+            if (!isOurs) return;
+            cleanup();
+            if (msg.error) reject(new Error(msg.error));
+            else resolve(msg);
+        };
+
+        const onClose = () => {
+            cleanup();
+            reject(new Error("Browser tab disconnected before completing the request."));
+        };
+
+        const onError = (err) => {
+            cleanup();
+            reject(new Error(`Browser WebSocket error: ${err.message}`));
+        };
+
+        timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`Bridge request '${type}' timed out after ${timeoutMs / 1000}s. Check the browser tab.`));
+        }, timeoutMs);
+
+        socket.on("message", onMessage);
+        socket.once("close", onClose);
+        socket.once("error", onError);
+
+        // Payload is spread flat so older extension builds that read data.prompt still work.
+        socket.send(JSON.stringify({ id, type, ...payload }));
+    });
+}
+
 wss.on("connection", (ws) => {
     if (browserSocket && browserSocket.readyState === 1) {
-        browserSocket.send(JSON.stringify({ type: "replaced" }));
+        try { browserSocket.send(JSON.stringify({ type: "replaced" })); } catch (e) {}
         browserSocket.close();
     }
     browserSocket = ws;
+    setupHeartbeat(ws);
+    ws.on("close", () => {
+        if (browserSocket === ws) browserSocket = null;
+    });
     resetSessionMemory();
 });
 
@@ -187,12 +285,12 @@ server.setRequestHandler(CallToolRequestSchema, async(request) => {
                 filePaths = []
         } = request.params.arguments;
 
-        const chatInfo = await new Promise((resolve) => {
-            browserSocket.once("message", (data) => {
-                resolve(JSON.parse(data.toString()));
-            });
-            browserSocket.send(JSON.stringify({ type: "check_session" }));
-        });
+        let chatInfo;
+        try {
+            chatInfo = await callBrowserTab("check_session", {}, 15000);
+        } catch (err) {
+            return { content: [{ type: "text", text: `Error from Web AI Bridge: ${err.message}` }] };
+        }
 
         if (chatInfo.isEmptyChat || chatInfo.chatKey !== sessionState.lastChatKey) {
             resetSessionMemory();
@@ -239,16 +337,16 @@ server.setRequestHandler(CallToolRequestSchema, async(request) => {
         bundle += `\n=== CURRENT TASK TO EXECUTE ===\n${task}\n\n`;
         bundle += `[SYSTEM INSTRUCTION FOR WEB ARCHITECT]: Provide the complete, production-ready code changes required for the modified files. Do not truncate code or use lazy placeholders. Clearly specify the file path for each code block.`;
 
-        const reply = await new Promise((resolve) => {
-            browserSocket.once("message", (data) => {
-                resolve(JSON.parse(data.toString()).reply);
-            });
-            browserSocket.send(JSON.stringify({ type: "prompt", prompt: bundle }));
-        });
-
-        return { content: [{ type: "text", text: reply }] };
+        try {
+            const msg = await callBrowserTab("prompt", { prompt: bundle }, 660000); // a bit above the extension's own 10 min cap
+            return { content: [{ type: "text", text: String(msg.reply) }] };
+        } catch (err) {
+            return { content: [{ type: "text", text: `Error from Web AI Bridge: ${err.message}` }] };
+        }
     }
 });
 
 const transport = new StdioServerTransport();
+// When the IDE closes the MCP connection, shut down instead of lingering in the background.
+transport.onclose = cleanupAndExit;
 await server.connect(transport);
