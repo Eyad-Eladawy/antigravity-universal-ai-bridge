@@ -235,18 +235,74 @@ function extractCleanResponse(element) {
     return clone.innerText.trim();
 }
 
+// Above this size, typing the text into the chat box can freeze the tab, so it is uploaded as a .txt file instead.
+const FILE_UPLOAD_THRESHOLD = 20000;
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// The chat UI shows the uploaded file's name in an attachment chip; use that to confirm the upload registered.
+function isFileAttached(token) {
+    return (document.body.innerText || '').includes(token);
+}
+
+// Upload `content` as a .txt file. Tries a file input, then a synthetic paste, then a synthetic drop,
+// one at a time, so the file is never attached twice. Resolves true once the file shows up in the page.
+async function attachAsTxtFile(editor, content, fileName, token) {
+    const file = new File([content], fileName, { type: 'text/plain' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+
+    const attempts = [
+        () => {
+            const input = document.querySelector('input[type="file"]');
+            if (!input) return;
+            input.files = dt.files;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+        () => {
+            editor.focus();
+            editor.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
+        },
+        () => {
+            editor.focus();
+            editor.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        }
+    ];
+
+    for (const attempt of attempts) {
+        try { attempt(); } catch (e) { continue; }
+        for (let i = 0; i < 12; i++) {   // up to 3s for the chip to appear
+            await sleep(250);
+            if (isFileAttached(token)) return true;
+        }
+    }
+    return false;
+}
+
 async function askWebProvider(text) {
     const editor = document.querySelector(provider.input);
     if (!editor) return `Error: Input box not found on ${provider.name}. Please open a fresh chat session.`;
 
     const initialCount = document.querySelectorAll(provider.response).length;
 
-    fillInputBox(editor, text);
+    let uploadedAsFile = false;
+    if (text.length > FILE_UPLOAD_THRESHOLD) {
+        const token = `context_${Math.random().toString(36).slice(2, 6)}`;
+        const fileName = `${token}.txt`;
+        uploadedAsFile = await attachAsTxtFile(editor, text, fileName, token);
+        if (uploadedAsFile) {
+            fillInputBox(editor, `Read the attached file (${fileName}) carefully and execute the "CURRENT TASK TO EXECUTE" section at the bottom of it. Provide complete, production-ready code with exact file paths.`);
+        }
+    }
+    // Small prompt, or the upload did not register: type the text as before.
+    if (!uploadedAsFile) fillInputBox(editor, text);
 
-    // Frameworks (Angular/React) enable the send button a moment after the text lands; poll up to ~1.5s.
+    // Frameworks (Angular/React) enable the send button a moment after the text lands (~1.5s).
+    // After a file upload the button can stay disabled until the upload finishes, so wait up to ~20s.
+    const maxPolls = uploadedAsFile ? 80 : 6;
     let sendBtn = null;
-    for (let i = 0; i < 6; i++) {
-        await new Promise(r => setTimeout(r, 250));
+    for (let i = 0; i < maxPolls; i++) {
+        await sleep(250);
         sendBtn = findSendButton();
         if (isButtonReady(sendBtn)) break;
     }
