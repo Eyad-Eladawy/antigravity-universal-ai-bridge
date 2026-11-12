@@ -63,24 +63,49 @@ const ALLOWED_ORIGINS = new Set([
     "https://chat.deepseek.com"
 ]);
 
-const wss = new WebSocketServer({
-    host: "127.0.0.1",
-    port: 4545,
-    verifyClient: (info) => {
-        const allowed = ALLOWED_ORIGINS.has(info.origin);
-        log(`verifyClient origin: "${info.origin}", allowed: ${allowed}`);
-        return allowed;
-    }
-});
+const BRIDGE_PORT = 4545;
+const BIND_RETRY_DELAY_MS = 1000;
+const BIND_MAX_ATTEMPTS = 10;
 
-wss.on("listening", () => {
-    log("WebSocketServer successfully listening on 127.0.0.1:4545");
-});
+let wss = null;
+let bindAttempts = 0;
 
-wss.on("error", (err) => {
-    log(`WebSocketServer ERROR: ${err.message}`);
-    console.error("[bridge] WebSocket error:", err.message);
-});
+// Starts the WebSocket server. If the port is busy (usually the previous bridge is still shutting
+// down after an IDE restart), retry for ~10s, then exit with a clear message. It never kills the
+// process that holds the port: that could be someone else's program, or a live bridge of another window.
+function startServer() {
+    bindAttempts++;
+    wss = new WebSocketServer({
+        host: "127.0.0.1",
+        port: BRIDGE_PORT,
+        verifyClient: (info) => {
+            const allowed = ALLOWED_ORIGINS.has(info.origin);
+            log(`verifyClient origin: "${info.origin}", allowed: ${allowed}`);
+            return allowed;
+        }
+    });
+
+    wss.on("listening", () => {
+        log(`WebSocketServer successfully listening on 127.0.0.1:${BRIDGE_PORT}`);
+    });
+
+    wss.on("connection", handleConnection);
+
+    wss.on("error", (err) => {
+        log(`WebSocketServer ERROR: ${err.message}`);
+        if (err.code === "EADDRINUSE") {
+            try { wss.close(); } catch (e) {}
+            if (bindAttempts < BIND_MAX_ATTEMPTS) {
+                setTimeout(startServer, BIND_RETRY_DELAY_MS);
+                return;
+            }
+            console.error(`[bridge] Port ${BRIDGE_PORT} is still in use after ${bindAttempts} attempts. Another bridge (for example from an earlier IDE session) is probably still running. Close it, then restart this MCP server. Exiting so no idle process is left behind.`);
+            cleanupAndExit(1);
+            return;
+        }
+        console.error("[bridge] WebSocket error:", err.message);
+    });
+}
 let browserSocket = null;
 let heartbeatInterval = null;
 
@@ -108,19 +133,56 @@ function setupHeartbeat(ws) {
     if (heartbeatInterval.unref) heartbeatInterval.unref();
 }
 
-function cleanupAndExit() {
+// Used directly as an event handler too (events pass strings/booleans), so only a number counts as an exit code.
+function cleanupAndExit(code) {
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     if (browserSocket) {
         try { browserSocket.close(); } catch (e) {}
     }
-    try { wss.close(); } catch (e) {}
-    process.exit(0);
+    try { if (wss) wss.close(); } catch (e) {}
+    process.exit(typeof code === "number" ? code : 0);
 }
 
 process.stdin.on("close", cleanupAndExit);
 process.stdin.on("end", cleanupAndExit);
 process.on("SIGINT", cleanupAndExit);
 process.on("SIGTERM", cleanupAndExit);
+
+// Exit when the program that launched us (the IDE) is gone. Closing stdin is not reliable: if the IDE is
+// killed while something else still holds the pipe (common on Windows), the bridge used to keep running
+// in the background forever. Set BRIDGE_NO_WATCHDOG=1 to turn this off.
+const PARENT_PID = process.ppid;
+const PARENT_CHECK_MS = 5000;
+
+function isProcessAlive(pid) {
+    try {
+        process.kill(pid, 0);   // signal 0 only tests that the process exists
+        return true;
+    } catch (e) {
+        return e.code === "EPERM";   // exists, but we are not allowed to signal it
+    }
+}
+
+function startParentWatchdog() {
+    log(`Bridge started, parent PID ${PARENT_PID}`);
+    if (process.env.BRIDGE_NO_WATCHDOG === "1") {
+        log("Parent watchdog disabled by BRIDGE_NO_WATCHDOG");
+        return;
+    }
+    // If the parent is already gone (or this is PID 1 of a container) there is nothing reliable to watch.
+    if (!(PARENT_PID > 1) || !isProcessAlive(PARENT_PID)) {
+        log("Parent watchdog not started: parent is not a live process");
+        return;
+    }
+    const timer = setInterval(() => {
+        if (!isProcessAlive(PARENT_PID)) {
+            log(`Parent process ${PARENT_PID} is gone, shutting down`);
+            cleanupAndExit();
+        }
+    }, PARENT_CHECK_MS);
+    // Never keep the process alive just for this timer.
+    if (timer.unref) timer.unref();
+}
 
 let sessionState = {
     initializedProjects: new Set(),
@@ -193,7 +255,7 @@ function callBrowserTab(type, payload = {}, timeoutMs = 300000) {
     });
 }
 
-wss.on("connection", (ws) => {
+function handleConnection(ws) {
     log("Browser connected via WebSocket!");
     if (browserSocket && browserSocket.readyState === 1) {
         try { browserSocket.send(JSON.stringify({ type: "replaced" })); } catch (e) {}
@@ -206,7 +268,10 @@ wss.on("connection", (ws) => {
         if (browserSocket === ws) browserSocket = null;
     });
     resetSessionMemory();
-});
+}
+
+startServer();
+startParentWatchdog();
 
 function autoDiscoverProjectContext(projectRoot, alreadyIncludedFiles) {
     if (!projectRoot || !fs.existsSync(projectRoot)) return "";
