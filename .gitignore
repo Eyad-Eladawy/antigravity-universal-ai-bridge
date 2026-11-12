@@ -6,3 +6,6 @@ Thumbs.db
 .env
 .vscode/
 .idea/
+
+# Runtime logs (BRIDGE_LOG_FILE)
+*.log
