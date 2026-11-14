@@ -1,6 +1,6 @@
 {
   "name": "antigravity-universal-ai-bridge",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Use the Web AI you already pay for (Gemini, Claude, ChatGPT, DeepSeek) directly inside Antigravity IDE.",
   "private": true,
   "type": "commonjs",
